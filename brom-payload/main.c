@@ -74,14 +74,30 @@ void udelay (unsigned long usec)
 }
 #endif
 
+/* USB full-speed bulk has a 64-byte max packet. A transfer whose length is a
+   multiple of 64 ends on a full packet with no terminating short packet, and
+   Windows' MediaTek VCOM driver then never completes the read. emmc_read (512)
+   and rpmb_read (256) are both multiples of 64, so split off the last word to
+   end each transfer on a short packet.
+   send_data stays at file scope on purpose: passed to send() by parameter
+   instead, GCC -Os inlines send() and deletes the send_data calls. */
+static int (*send_data)() = (void*)0xC10F;
+
+static void send(const void *p, size_t n) {
+    if (n % 64) {
+        send_data(p, n);
+        return;
+    }
+    send_data(p, n - 4);
+    send_data((const char *)p + n - 4, 4);
+}
+
 int main() {
     char buf[0x200] = { 0 };
     int ret = 0;
 
     int (*send_dword)() = (void*)0xC047;
     int (*recv_dword)() = (void*)0xC013;
-    // addr, sz
-    int (*send_data)() = (void*)0xC10F;
     // addr, sz, flags (=0)
     int (*recv_data)() = (void*)0xC089;
 
@@ -117,7 +133,7 @@ int main() {
             if (mmc_read(&host, block, buf) != 0) {
                 printf("Read error!\n");
             } else {
-                send_data(buf, sizeof(buf));
+                send(buf, sizeof(buf));
             }
             break;
         }
@@ -145,7 +161,7 @@ int main() {
         case 0x2000: {
             printf("Read rpmb\n");
             mmc_rpmb_read(&host, buf);
-            send_data(buf, 0x100);
+            send(buf, 0x100);
             break;
         }
         case 0x2001: {
